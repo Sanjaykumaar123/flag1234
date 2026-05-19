@@ -1,37 +1,35 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from vllm import LLM, SamplingParams
 import json
-import os
 
-app = FastAPI(title="ContextForge Qwen3-4B API")
+app = FastAPI(title="ContextForge Qwen3-4B API (vLLM Engine)")
 
 # Model configuration
 # Note: Swap this to "Qwen/Qwen3-4B-Instruct" when the weights are available.
 MODEL_NAME = "Qwen/Qwen2.5-3B-Instruct" 
 
-print(f"Loading {MODEL_NAME}...")
+print(f"Loading {MODEL_NAME} using vLLM for ultra-fast inference...")
 try:
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL_NAME,
-        torch_dtype=torch.float16,
-        device_map="auto"
+    llm = LLM(
+        model=MODEL_NAME, 
+        trust_remote_code=True,
+        tensor_parallel_size=1, # Change this if using multiple GPUs
+        gpu_memory_utilization=0.9
     )
-    print("Model loaded successfully!")
+    print("vLLM Engine loaded successfully!")
 except Exception as e:
-    print(f"Error loading model (this is normal if you haven't downloaded it yet): {e}")
-    model, tokenizer = None, None
+    print(f"Error loading model (Check GPU / Dependencies): {e}")
+    llm = None
 
 class ChunkRequest(BaseModel):
-    text: string
-    domain: string
+    text: str
+    domain: str
 
 @app.post("/annotate")
 async def annotate_chunk(req: ChunkRequest):
-    if not model or not tokenizer:
-        raise HTTPException(status_code=503, detail="Model not loaded. Check GPU/Dependencies.")
+    if not llm:
+        raise HTTPException(status_code=503, detail="vLLM Engine not loaded. Check GPU.")
 
     # Adaptive Few-Shot In-Context Learning (ICL) Prompt
     prompt = f"""
@@ -51,19 +49,14 @@ Text: "{req.text}"
 <|im_start|>assistant
 """
     try:
-        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+        sampling_params = SamplingParams(
+            temperature=0.1,
+            max_tokens=150,
+            stop=["<|im_end|>"]
+        )
         
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=150,
-                temperature=0.1,
-                do_sample=False
-            )
-            
-        # Extract only the newly generated tokens
-        generated_tokens = outputs[0][inputs['input_ids'].shape[1]:]
-        response = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        outputs = llm.generate([prompt], sampling_params)
+        response = outputs[0].outputs[0].text
         
         # Clean up markdown JSON formatting if present
         if "```json" in response:
