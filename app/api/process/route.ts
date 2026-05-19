@@ -162,24 +162,44 @@ Text: "${chunkText}"
     const baseUrl = process.env.LLM_BASE_URL || "https://api.together.xyz/v1/chat/completions";
     const model = process.env.LLM_MODEL || "Qwen/Qwen2.5-7B-Instruct";
 
+    // Check if hitting the local Python FastAPI microservice
+    const isLocalPythonAPI = baseUrl.includes("/annotate");
+
+    let requestBody: any;
+    if (isLocalPythonAPI) {
+      requestBody = {
+        text: chunkText,
+        domain: domain
+      };
+    } else {
+      requestBody = {
+        model: model,
+        response_format: { type: "json_object" },
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.1
+      };
+    }
+
     const response = await fetch(baseUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${apiKey}`
       },
-      body: JSON.stringify({
-        model: model,
-        response_format: { type: "json_object" },
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.1
-      })
+      body: JSON.stringify(requestBody)
     });
 
     if (!response.ok) throw new Error("LLM API failed");
     
     const data = await response.json();
-    let content = data.choices[0].message.content;
+    
+    let content = "";
+    if (isLocalPythonAPI) {
+        // The Python server returns the JSON directly
+        content = typeof data === "string" ? data : JSON.stringify(data);
+    } else {
+        content = data.choices[0].message.content;
+    }
     
     const parsed = JSON.parse(content);
     const entities = Array.isArray(parsed) ? parsed : (parsed.entities || []);
