@@ -209,13 +209,10 @@ export function AnnotationPreview({ annotations }: { annotations: any[] }) {
                   </div>
                   <p className="text-white/60">],</p>
 
-                  <p><span className="text-blue-400">"evidence_spans"</span>: <span className="text-white/60">[</span></p>
-                  <div className="pl-3 space-y-0.5">
-                    {(a.evidence_spans||[]).map((e:string, i:number, arr:string[])=>(
-                       <p key={i}><span className="text-orange-300">"{e}"</span>{i < arr.length-1 ? "," : ""}</p>
-                    ))}
-                  </div>
                   <p className="text-white/60">],</p>
+                  
+                  <p><span className="text-blue-400">"evidence_span"</span>: <span className="text-orange-300">"{a.evidence_span}"</span>,</p>
+                  <p><span className="text-blue-400">"support_score"</span>: <span className="text-yellow-400">{Number(a.support_score).toFixed(3)}</span>,</p>
 
                   <p><span className="text-blue-400">"contradictions_detected"</span>: <span className="text-white/60">[</span></p>
                   <div className="pl-3 space-y-0.5">
@@ -344,11 +341,30 @@ export function AnnotationLineage({ annotations }: { annotations: any[] }) {
                   Risk: {a.hallucination_risk}
                 </span>
               </div>
-              <div className="grid grid-cols-2 gap-2 text-[11px] text-muted-foreground mt-3">
-                <p>Consensus: <span className="text-yellow-400">{a.consensus_score ? parseFloat(a.consensus_score).toFixed(1) + "%" : "N/A"}</span></p>
-                <p>Grounded Terms: <span className="text-emerald-400">{a.grounded_terms ?? a.entities?.length ?? 0}</span></p>
-                <p>Verifier Passes: <span className="text-white">{a.verifier_passes || 1}</span></p>
-                <p>Semantic Match: <span className="text-blue-400">{a.semantic_match_score || "0.85"}</span></p>
+              <div className="mt-3 space-y-2 border-t border-white/10 pt-2 text-[10px] text-muted-foreground font-mono bg-black/20 p-2 rounded-lg">
+                <p className="text-white/80 border-b border-white/5 pb-1">Matched Entities:</p>
+                <div className="flex flex-wrap gap-1">
+                  {(a.matched_entities||[]).map((e:string,idx:number)=>(
+                    <span key={idx} className="bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded">{e}</span>
+                  ))}
+                  {(!a.matched_entities || a.matched_entities.length === 0) && <span className="text-red-400">0 grounded terms</span>}
+                </div>
+                
+                {a.unsupported_claims?.length > 0 && (
+                  <>
+                    <p className="text-red-300 border-b border-white/5 pb-1 mt-2">Unsupported Claims:</p>
+                    <ul className="list-disc pl-4 text-red-400/80">
+                      {a.unsupported_claims.map((c:string,idx:number)=><li key={idx}>{c}</li>)}
+                    </ul>
+                  </>
+                )}
+
+                <div className="grid grid-cols-2 gap-2 mt-2 pt-2 border-t border-white/5">
+                  <p>Entity Grounding: <span className="text-blue-400">{(Number(a.entity_grounding_score)*100).toFixed(0)}%</span></p>
+                  <p>Semantic Similarity: <span className="text-violet-400">{Number(a.semantic_match_score).toFixed(2)}</span></p>
+                  <p>Verifier Consensus: <span className="text-yellow-400">{a.verifier_consensus}</span></p>
+                  <p>Evidence Source: <span className="text-white">C{a.chunk}</span></p>
+                </div>
               </div>
             </motion.div>
           ))}
