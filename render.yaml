@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: contextforge-backend
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    rootContext: python_server
+    envVars:
+      - key: MODEL_NAME
+        value: Qwen/Qwen3-4B
+      - key: ENFORCE_EAGER
+        value: "0"
+      - key: MAX_NUM_BATCHED_TOKENS
+        value: "2048" # Lower limit for Render standard hosts to prevent out-of-memory
+      - key: MAX_NUM_SEQS
+        value: "256"
