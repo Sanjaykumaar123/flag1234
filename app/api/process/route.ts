@@ -177,7 +177,8 @@ function verifyAndScore(chunkText: string, domain: string, entities: any[]) {
     hallucinationRisk: factVerificationScore < 0.6 ? "High" : "Low", 
     logs, 
     hasContradiction,
-    contradictionMsg
+    contradictionMsg,
+    semanticMatch
   };
 }
 
@@ -242,7 +243,7 @@ export async function POST(req: NextRequest) {
 
           sendEvent({ step: "generator", status: "active", log: `[AnnotationEngine] Processing ${chunkId} (${chunkObj.tokenCount} tokens)...` });
           
-          let { confidence, hallucinationRisk, logs: verifierLogs, hasContradiction, contradictionMsg } = verifyAndScore(text, domain, entities);
+          let { confidence, hallucinationRisk, logs: verifierLogs, hasContradiction, contradictionMsg, semanticMatch } = verifyAndScore(text, domain, entities);
 
           for (const log of verifierLogs) {
             sendEvent({ step: "generator", status: "active", log });
