@@ -34,36 +34,44 @@ MAX_NUM_SEQS             = int(os.environ.get("MAX_NUM_SEQS", "2048"))
 ENFORCE_EAGER            = os.environ.get("ENFORCE_EAGER", "0") == "1"
 MAX_ICL_SHOTS            = int(os.environ.get("MAX_ICL_SHOTS", "5"))
 
-print(f"[ContextForge] Model : {MODEL_NAME} | Eager: {ENFORCE_EAGER}")
+LOW_RAM_MODE             = os.environ.get("LOW_RAM_MODE", "0") == "1"
+GEMINI_API_KEY           = os.environ.get("GEMINI_API_KEY", "AIzaSyAhuJZxc1Q7JDoYkzpHkjQz8GvKf3EYGSk")
+
+print(f"[ContextForge] Model : {MODEL_NAME} | Eager: {ENFORCE_EAGER} | Low RAM Mode: {LOW_RAM_MODE}")
 
 # ── Model bootstrap ───────────────────────────────────────────────────────────
 llm = None; _model_tf = None; tokenizer_obj = None; _backend = "none"
 
-try:
-    from vllm import LLM, SamplingParams as _SP
+if LOW_RAM_MODE:
+    _backend = "gemini"
+    print("[ContextForge] ⚡ Low RAM Mode active: skipping local models, using Gemini API client.")
+else:
     try:
-        from vllm.platforms import current_platform
-        print(f"[vllm-plugin-FL] Platform: {current_platform}")
-    except ImportError:
-        pass
-    llm = LLM(model=MODEL_NAME, max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS,
-               max_num_seqs=MAX_NUM_SEQS, enforce_eager=ENFORCE_EAGER)
-    _backend = "vllm"
-    print(f"[ContextForge] ✅ vLLM ready: {MODEL_NAME}")
-except Exception as e:
-    print(f"[ContextForge] ⚠️  vLLM unavailable ({e}), trying transformers...")
-    try:
-        import torch
-        from transformers import AutoTokenizer, AutoModelForCausalLM
-        tokenizer_obj = AutoTokenizer.from_pretrained(MODEL_NAME)
-        _model_tf = AutoModelForCausalLM.from_pretrained(
-            MODEL_NAME,
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-            device_map="auto")
-        _backend = "transformers"
-        print(f"[ContextForge] ✅ Transformers ready: {MODEL_NAME}")
-    except Exception as e2:
-        print(f"[ContextForge] ❌ No backend available: {e2}")
+        from vllm import LLM, SamplingParams as _SP
+        try:
+            from vllm.platforms import current_platform
+            print(f"[vllm-plugin-FL] Platform: {current_platform}")
+        except ImportError:
+            pass
+        llm = LLM(model=MODEL_NAME, max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS,
+                   max_num_seqs=MAX_NUM_SEQS, enforce_eager=ENFORCE_EAGER)
+        _backend = "vllm"
+        print(f"[ContextForge] ✅ vLLM ready: {MODEL_NAME}")
+    except Exception as e:
+        print(f"[ContextForge] ⚠️  vLLM unavailable ({e}), trying transformers...")
+        try:
+            import torch
+            from transformers import AutoTokenizer, AutoModelForCausalLM
+            tokenizer_obj = AutoTokenizer.from_pretrained(MODEL_NAME)
+            _model_tf = AutoModelForCausalLM.from_pretrained(
+                MODEL_NAME,
+                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                device_map="auto")
+            _backend = "transformers"
+            print(f"[ContextForge] ✅ Transformers ready: {MODEL_NAME}")
+        except Exception as e2:
+            _backend = "gemini"
+            print(f"[ContextForge] ❌ No local backend available ({e2}), falling back to Gemini API.")
 
 # ── FastAPI ───────────────────────────────────────────────────────────────────
 app = FastAPI(title="ContextForge AI — FlagOS Track 3", version="3.0.0")
@@ -338,6 +346,23 @@ def _infer(prompt: str, max_tokens: int = 512,
             )
         gen = out[0][inputs["input_ids"].shape[1]:]
         return tokenizer_obj.decode(gen, skip_special_tokens=True).strip()
+    elif _backend == "gemini":
+        import urllib.request
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        headers = {"Content-Type": "application/json"}
+        # Prepare content payload for Gemini API
+        body = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.2, "maxOutputTokens": max_tokens}
+        }
+        req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as response:
+                res_data = json.loads(response.read().decode("utf-8"))
+                return res_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        except Exception as e:
+            print(f"[ContextForge] Gemini API call failed: {e}")
+            return "{}"
     else:
         raise RuntimeError("No backend available")
 

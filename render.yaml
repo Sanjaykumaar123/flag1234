@@ -10,7 +10,11 @@ services:
         value: Qwen/Qwen3-4B
       - key: ENFORCE_EAGER
         value: "0"
+      - key: LOW_RAM_MODE
+        value: "1"
+      - key: GEMINI_API_KEY
+        value: "AIzaSyAhuJZxc1Q7JDoYkzpHkjQz8GvKf3EYGSk"
       - key: MAX_NUM_BATCHED_TOKENS
-        value: "2048" # Lower limit for Render standard hosts to prevent out-of-memory
+        value: "2048"
       - key: MAX_NUM_SEQS
         value: "256"
