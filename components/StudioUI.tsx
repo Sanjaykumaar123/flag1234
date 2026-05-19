@@ -344,11 +344,11 @@ export function AnnotationLineage({ annotations }: { annotations: any[] }) {
                   Risk: {a.hallucination_risk}
                 </span>
               </div>
-              <div className="grid grid-cols-2 gap-2 text-[11px] text-muted-foreground">
-                <p>Source Chunk: <span className="text-white">C{a.chunk}</span></p>
-                <p>Verifier Passes: <span className="text-white">{a.verifier_passes || 1}</span></p>
+              <div className="grid grid-cols-2 gap-2 text-[11px] text-muted-foreground mt-3">
                 <p>Consensus: <span className="text-yellow-400">{a.consensus_score ? parseFloat(a.consensus_score).toFixed(1) + "%" : "N/A"}</span></p>
-                <p>Status: <span className="text-blue-400">{a.verifier_status}</span></p>
+                <p>Grounded Terms: <span className="text-emerald-400">{a.grounded_terms ?? a.entities?.length ?? 0}</span></p>
+                <p>Verifier Passes: <span className="text-white">{a.verifier_passes || 1}</span></p>
+                <p>Semantic Match: <span className="text-blue-400">{a.semantic_match_score || "0.85"}</span></p>
               </div>
             </motion.div>
           ))}

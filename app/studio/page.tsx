@@ -77,8 +77,8 @@ export default function StudioPage() {
 
   const exportSubmission = () => {
     if (!annotations.length) return;
-    const headers = ["id", "label", "sentiment", "confidence"];
-    const rows = annotations.map(a => `${a.chunk},"${a.label}","${a.sentiment}",${Number(a.confidence).toFixed(3)}`);
+    const headers = ["id", "label", "sentiment", "confidence", "hallucinationRisk"];
+    const rows = annotations.map(a => `${a.chunk},"${a.label}","${a.sentiment}",${Number(a.confidence).toFixed(3)},"${a.hallucination_risk}"`);
     const csvContent = [headers.join(","), ...rows].join("\n");
     const blob = new Blob([csvContent], { type:"text/csv" });
     const url = URL.createObjectURL(blob);

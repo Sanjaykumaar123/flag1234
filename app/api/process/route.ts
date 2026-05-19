@@ -294,6 +294,8 @@ export async function POST(req: NextRequest) {
             source_chunk: chunkId,
             consensus_score: (confidence * 100).toFixed(1) + "%",
             verifier_passes: verifierPasses,
+            semantic_match_score: semanticMatch.toFixed(2),
+            grounded_terms: entities.length,
             domain: domain,
             summary: text
           };
