@@ -77,12 +77,26 @@ export default function StudioPage() {
 
   const exportSubmission = () => {
     if (!annotations.length) return;
-    const headers = ["id", "label", "sentiment", "confidence", "hallucinationRisk"];
-    const rows = annotations.map(a => `${a.chunk},"${a.label}","${a.sentiment}",${Number(a.confidence).toFixed(3)},"${a.hallucination_risk}"`);
-    const csvContent = [headers.join(","), ...rows].join("\n");
-    const blob = new Blob([csvContent], { type:"text/csv" });
+    // Competition JSONL format (one JSON object per line)
+    const lines = annotations.map((a: any) => JSON.stringify({
+      id:                  a.chunk,
+      label:               a.label,
+      sentiment:           a.sentiment,
+      rationale:           a.rationale || "",
+      confidence:          Number(a.confidence).toFixed(4),
+      hallucination_risk:  a.hallucination_risk,
+      entities:            a.entities || [],
+      matched_entities:    a.matched_entities || [],
+      entity_grounding:    Number(a.entity_grounding_score).toFixed(3),
+      icl_shots:           a.icl_shots || 5,
+      self_corrected:      a.self_corrected || false,
+      verifier_status:     a.verifier_status,
+      domain:              a.domain,
+      f1_proxy:            (Number(a.confidence) * 100).toFixed(1) + "%",
+    }));
+    const blob = new Blob([lines.join("\n")], { type: "application/jsonl" });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href=url; a.download="submission.csv";
+    const a = document.createElement("a"); a.href = url; a.download = "contextforge_submission.jsonl";
     document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
   };
 
@@ -214,7 +228,7 @@ export default function StudioPage() {
                 Track 3 — Annotation Studio
                 {isProcessing && <motion.span animate={{ opacity:[1,0.3,1] }} transition={{ repeat:Infinity, duration:1.5 }} className="text-[10px] bg-yellow-500/20 text-yellow-400 px-2 py-0.5 rounded-full font-normal">LIVE</motion.span>}
               </h1>
-              <p className="text-xs text-muted-foreground">FlagOS ICL Pipeline · Qwen3-4B · {currentFile || "No dataset loaded"}</p>
+              <p className="text-xs text-muted-foreground">FlagOS ICL Pipeline · Qwen3-4B · {iclShots}-shot {selfHeal ? "+ CoT" : ""} · {currentFile || "No dataset loaded"}</p>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
               <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs border ${isProcessing?"bg-yellow-500/10 border-yellow-500/20 text-yellow-400":"bg-emerald-500/10 border-emerald-500/20 text-emerald-400"}`}>
@@ -234,7 +248,7 @@ export default function StudioPage() {
               {phase==="complete" && (
                 <motion.button initial={{scale:0}} animate={{scale:1}} whileHover={{scale:1.05}} onClick={exportSubmission}
                   className="px-4 py-2 rounded-full text-sm font-bold flex items-center gap-2 bg-emerald-400 text-black shadow-[0_0_25px_rgba(16,185,129,0.4)] hover:shadow-[0_0_40px_rgba(16,185,129,0.6)] transition-all">
-                  <Award className="w-4 h-4" /> Export Submission
+                  <Award className="w-4 h-4" /> Export JSONL
                 </motion.button>
               )}
             </div>

@@ -234,39 +234,58 @@ export function AnnotationPreview({ annotations }: { annotations: any[] }) {
   );
 }
 
-// ICL Prompt Inspector
+// ICL Prompt Inspector — shows live ICL results from vllm-plugin-FL
 export function ICLInspector({ annotations }: { annotations: any[] }) {
-  const examples = [
-    { label: "Financial", text: "Revenue grew 14% YoY to $1.2B...", sentiment: "Positive", conf: "0.96" },
-    { label: "Medical", text: "Patient presented with acute symptoms...", sentiment: "Neutral", conf: "0.94" },
-    { label: "Legal", text: "Parties agree to binding arbitration...", sentiment: "Neutral", conf: "0.97" },
-    { label: "Technical", text: "The transformer architecture achieved...", sentiment: "Positive", conf: "0.95" },
-    { label: "Scientific", text: "Statistical significance was p<0.05...", sentiment: "Neutral", conf: "0.93" },
-  ];
   const latest = annotations[annotations.length - 1];
+  const iclShots = latest?.icl_shots ?? 5;
+  const domain   = latest?.domain ?? "general";
+
+  // Static exemplar previews per domain (mirrors server-side ICL_EXEMPLARS)
+  const PREVIEW: Record<string, { text: string; label: string; sentiment: string }[]> = {
+    finance:    [{ text:"Revenue grew 14% YoY to $1.2B...", label:"Financial Performance Report", sentiment:"Mixed" },
+                 { text:"$500M share buyback approved...", label:"Capital Allocation Decision", sentiment:"Positive" }],
+    medical:    [{ text:"BP 135/85 mmHg, 500mg Amoxicillin...", label:"Clinical Patient Assessment", sentiment:"Neutral" },
+                 { text:"15% BMI reduction, 35% GI events...", label:"Clinical Trial Outcome Report", sentiment:"Mixed" }],
+    legal:      [{ text:"NDA: Acme Corp & Beta Industries...", label:"Non-Disclosure Agreement", sentiment:"Neutral" }],
+    technology: [{ text:"128-qubit, coherence 500µs...", label:"Quantum Hardware Benchmark", sentiment:"Positive" },
+                 { text:"Latency 45s→12s, 98% detection...", label:"System Performance Report", sentiment:"Positive" }],
+    scientific: [{ text:"p<0.05, Cohen's d=0.72, n=1200", label:"Statistical Analysis Report", sentiment:"Positive" }],
+    general:    [{ text:"Committee reviewed the proposal...", label:"Administrative Communication", sentiment:"Neutral" }],
+  };
+  const previews = (PREVIEW[domain] ?? PREVIEW.general).slice(0, iclShots);
+
   return (
     <div className="glass-panel p-5 rounded-2xl border border-white/8 h-full">
       <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
         <BrainCircuit className="w-4 h-4 text-blue-400" />
         <span>ICL Prompt Inspector</span>
-        <span className="ml-auto text-[10px] bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded-full">{examples.length} EXAMPLES</span>
+        <span className="ml-auto text-[10px] bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded-full">{iclShots}-SHOT · {domain.toUpperCase()}</span>
       </h3>
       <div className="space-y-2 font-mono text-[11px] max-h-[300px] overflow-y-auto pr-1">
         <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-3">
-          <p className="text-blue-400 mb-1 font-bold">▸ SYSTEM</p>
-          <p className="text-muted-foreground leading-relaxed">Expert annotator for long-context docs. Apply ICL with {examples.length}-shot examples to produce structured labels.</p>
+          <p className="text-blue-400 mb-1 font-bold">▸ SYSTEM — Track 3 ICL Annotator</p>
+          <p className="text-muted-foreground leading-relaxed">Domain-adaptive {iclShots}-shot ICL · Chain-of-Thought reasoning · Entity grounding verification · Self-correction on JSON parse failure.</p>
         </div>
-        {examples.map((ex, i) => (
+        {previews.map((ex, i) => (
           <motion.div key={i} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.1 }}
             className="bg-white/[0.03] border border-white/8 rounded-xl p-2.5">
-            <p className="text-yellow-400 font-bold mb-1">▸ EXAMPLE {i+1}</p>
+            <p className="text-yellow-400 font-bold mb-1">▸ EXAMPLE {i+1} · {domain}</p>
             <p className="text-muted-foreground">In: "{ex.text}"</p>
-            <p className="text-emerald-400">Out: {`{label:"${ex.label}", sentiment:"${ex.sentiment}", confidence:${ex.conf}}`}</p>
+            <p className="text-emerald-400">Out: {`{label:"${ex.label}", sentiment:"${ex.sentiment}"}`}</p>
           </motion.div>
         ))}
         <div className="bg-violet-500/10 border border-violet-500/20 rounded-xl p-3">
-          <p className="text-violet-400 font-bold mb-1">▸ CURRENT CHUNK</p>
-          <p className="text-white/70">{latest ? `"${latest.summary?.slice(0, 100)}..."` : "Awaiting ingestion..."}</p>
+          <p className="text-violet-400 font-bold mb-1">▸ LATEST ANNOTATION</p>
+          {latest ? (
+            <div className="space-y-1">
+              <p className="text-white/70">"{latest.summary?.slice(0, 80)}..."</p>
+              <p className="text-emerald-400">→ {latest.label} · {latest.sentiment}</p>
+              {latest.rationale && <p className="text-blue-300/80 italic">"{latest.rationale}"</p>}
+              {latest.self_corrected && <p className="text-yellow-400">⚕ Self-corrected by retry loop</p>}
+            </div>
+          ) : (
+            <p className="text-white/40">Awaiting ingestion...</p>
+          )}
         </div>
       </div>
     </div>

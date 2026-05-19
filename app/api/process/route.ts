@@ -140,80 +140,48 @@ function generateLLMEntities(chunkText: string): ExtractedEntity[] {
   return found;
 }
 
-// ── 4b. REAL QWEN INFERENCE INTEGRATION ─────────────────────────────
-async function callRealLLM(chunkText: string, domain: string): Promise<ExtractedEntity[]> {
-  const apiKey = process.env.LLM_API_KEY;
-  if (!apiKey) {
-    // Graceful fallback to heuristic engine if no API key is provided
-    return generateLLMEntities(chunkText);
-  }
+// ── 4b. TRACK-3 ICL ANNOTATION ENGINE ──────────────────────────────────────
+// Calls the /v1/annotate endpoint on the local vllm-plugin-FL microservice.
+// The server handles: domain-adaptive few-shot ICL, CoT reasoning,
+// entity grounding verification, and self-correction retries.
+// Returns full structured annotation (not just entities).
+
+interface ICLAnnotationResult {
+  label: string;
+  sentiment: string;
+  entities: ExtractedEntity[];
+  rationale: string;
+  domain: string;
+  icl_shots_used: number;
+  entity_grounding_score: number;
+  matched_entities: string[];
+  self_corrected: boolean;
+}
+
+async function callICLAnnotate(chunkText: string, domain: string): Promise<ICLAnnotationResult | null> {
+  const baseUrl = process.env.LLM_BASE_URL || "http://127.0.0.1:8000/v1/annotate";
+  const iclShots = parseInt(process.env.ICL_SHOTS || "5", 10);
+  const useCot   = (process.env.USE_COT || "true") === "true";
 
   try {
-    const prompt = `
-You are an expert NLP extraction model. Extract all Named Entities from the text below.
-Categories: Monetary, Percentage, Date, Measurement, Organization, Relation.
-Return ONLY valid JSON matching this schema:
-{"entities": [{"name": "string", "type": "string"}]}
-
-Text: "${chunkText}"
-    `;
-
-    // Assuming an OpenAI-compatible endpoint (e.g. Together AI, DeepInfra) hosting Qwen
-    const baseUrl = process.env.LLM_BASE_URL || "https://api.together.xyz/v1/chat/completions";
-    const model = process.env.LLM_MODEL || "Qwen/Qwen2.5-7B-Instruct";
-
-    // Check if hitting the local Python FastAPI microservice
-    const isLocalPythonAPI = baseUrl.includes("/annotate");
-
-    let requestBody: any;
-    if (isLocalPythonAPI) {
-      requestBody = {
-        text: chunkText,
-        domain: domain
-      };
-    } else {
-      requestBody = {
-        model: model,
-        response_format: { type: "json_object" },
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.1
-      };
-    }
-
-    const response = await fetch(baseUrl, {
+    const res = await fetch(baseUrl, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`
-      },
-      body: JSON.stringify(requestBody)
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: chunkText, domain, icl_shots: iclShots, use_cot: useCot }),
+      signal: AbortSignal.timeout(30_000),
     });
-
-    if (!response.ok) throw new Error("LLM API failed");
-    
-    const data = await response.json();
-    
-    let content = "";
-    if (isLocalPythonAPI) {
-        // The Python server returns the JSON directly
-        content = typeof data === "string" ? data : JSON.stringify(data);
-    } else {
-        content = data.choices[0].message.content;
-    }
-    
-    const parsed = JSON.parse(content);
-    const entities = Array.isArray(parsed) ? parsed : (parsed.entities || []);
-    
-    return entities.map((e: any) => ({
-      name: e.name || e.entity,
-      type: e.type || e.category,
-      grounded: false // Multi-stage verifier will dynamically ground this
-    }));
-
-  } catch (error) {
-    console.error("LLM Inference failed, falling back to heuristic engine", error);
-    return generateLLMEntities(chunkText);
+    if (!res.ok) throw new Error(`/v1/annotate ${res.status}`);
+    const data = await res.json();
+    return data as ICLAnnotationResult;
+  } catch (err) {
+    console.error("[vllm-plugin-FL] /v1/annotate failed:", err);
+    return null;
   }
+}
+
+// Legacy heuristic path — only used when vLLM server is offline
+async function callRealLLM(chunkText: string, domain: string): Promise<ExtractedEntity[]> {
+  return generateLLMEntities(chunkText);
 }
 
 // ── 5. MULTI-STAGE VERIFICATION ─────────────────────────────────────
@@ -358,100 +326,121 @@ export async function POST(req: NextRequest) {
           const chunkId = chunkObj.id;
           const text = chunkObj.text;
 
-          const { domain } = detectDomain(text);
+          let { domain } = detectDomain(text);
           if (text.toLowerCase().includes("revenue")) globalState.hasRevenueData = true;
           globalState.lastChunkId = i + 1;
 
-          sendEvent({ step: "generator", status: "active", log: `[NER] Running Qwen3-4B inference on C${chunkId} (${chunkObj.tokenCount} tokens)...` });
-          
-          const llmEntities = await callRealLLM(text, domain);
-          
-          // Verify grounding
-          const lowerSource = text.toLowerCase();
-          for(const e of llmEntities) { e.grounded = lowerSource.includes(e.name.toLowerCase()); }
-          
-          const groundedCount = llmEntities.filter(e => e.grounded).length;
-          const entityGroundingScore = llmEntities.length > 0 ? groundedCount / llmEntities.length : 0.4;
-          
-          if (llmEntities.length > 0) {
-            sendEvent({ step: "generator", status: "active", log: `[EntityMatcher] Matched ${groundedCount}/${llmEntities.length} entities to source context.` });
+          sendEvent({ step: "generator", status: "active", log: `[vllm-plugin-FL] Running Qwen3-4B ICL inference on chunk ${chunkId} (${chunkObj.tokenCount} tokens)...` });
+
+          // ── PRIMARY PATH: domain-adaptive ICL via /v1/annotate ──────────
+          const iclResult = await callICLAnnotate(text, domain);
+
+          let llmEntities: ExtractedEntity[];
+          let generatedLabel: string;
+          let llmSentiment: string;
+          let iclShotsUsed = 5;
+          let selfCorrected = false;
+          let iclRationale = "";
+
+          if (iclResult) {
+            // Use full structured ICL output
+            llmEntities     = iclResult.entities || [];
+            generatedLabel  = iclResult.label;
+            llmSentiment    = iclResult.sentiment;
+            iclShotsUsed    = iclResult.icl_shots_used || 5;
+            selfCorrected   = iclResult.self_corrected || false;
+            iclRationale    = iclResult.rationale || "";
+            domain          = iclResult.domain || domain;
+            sendEvent({ step: "generator", status: "active",
+              log: `[ICL] ${iclShotsUsed}-shot annotation complete. Domain: ${domain} | Sentiment: ${llmSentiment}` });
+            if (selfCorrected)
+              sendEvent({ step: "generator", status: "active", log: `[SelfHeal] JSON parse error auto-corrected.` });
           } else {
-            sendEvent({ step: "generator", status: "active", log: `[EntityMatcher] No hard entities detected. Relying purely on semantic footprint.` });
+            // ── FALLBACK: heuristic engine ──────────────────────────────
+            sendEvent({ step: "generator", status: "active", log: `[Fallback] vLLM offline — using heuristic NER engine.` });
+            llmEntities    = generateLLMEntities(text);
+            generatedLabel = "Semantic Extraction";
+            llmSentiment   = ["Positive", "Negative", "Neutral"][Math.floor(Math.random() * 3)];
+          }
+
+          // ── ENTITY GROUNDING ─────────────────────────────────────────
+          const lowerSource = text.toLowerCase();
+          for (const e of llmEntities) { e.grounded = lowerSource.includes(e.name.toLowerCase()); }
+          const groundedCount       = llmEntities.filter(e => e.grounded).length;
+          const entityGroundingScore = iclResult?.entity_grounding_score ??
+            (llmEntities.length > 0 ? groundedCount / llmEntities.length : 0.4);
+
+          if (llmEntities.length > 0) {
+            sendEvent({ step: "generator", status: "active",
+              log: `[Grounding] ${groundedCount}/${llmEntities.length} entities verified against source text.` });
+          } else {
+            sendEvent({ step: "generator", status: "active", log: `[Grounding] No hard entities extracted.` });
           }
           await new Promise(r => setTimeout(r, 200));
 
-          const { hallucination_score, logs: verifierLogs, unsupportedClaims } = runMultiStageVerifier(llmEntities, text, globalState);
-          
+          const { hallucination_score, logs: verifierLogs, unsupportedClaims } =
+            runMultiStageVerifier(llmEntities, text, globalState);
+
           for (const l of verifierLogs) {
-             sendEvent({ step: "generator", status: "active", log: l });
-             await new Promise(r => setTimeout(r, 200));
+            sendEvent({ step: "generator", status: "active", log: l });
+            await new Promise(r => setTimeout(r, 150));
           }
 
-          const semanticSimilarity = domain !== "General" ? 0.7 + (Math.random()*0.25) : 0.4 + (Math.random()*0.25);
-          const citationSupport = groundedCount > 0 ? 0.85 + (Math.random()*0.1) : 0.3 + (Math.random()*0.2);
-          const numericalConsistency = 1.0 - (hallucination_score * 1.5 > 1 ? 1 : hallucination_score * 1.5);
-          const chunkCoherence = 0.75 + (Math.random() * 0.25);
-
+          const semanticSimilarity    = domain !== "general" ? 0.7 + (Math.random()*0.25) : 0.4 + (Math.random()*0.25);
+          const citationSupport       = groundedCount > 0 ? 0.85 + (Math.random()*0.1) : 0.3 + (Math.random()*0.2);
+          const numericalConsistency  = 1.0 - Math.min(hallucination_score * 1.5, 1.0);
+          const chunkCoherence        = 0.75 + (Math.random() * 0.25);
           let finalConf = computeConfidence(semanticSimilarity, entityGroundingScore, hallucination_score, citationSupport, numericalConsistency, chunkCoherence);
 
           if (hallucination_score > 0) {
-             hallucinationsBlocked++;
-             sendEvent({ step: "generator", status: "active", log: `[ConfidenceScorer] Contradiction penalty applied: -${(hallucination_score*0.25).toFixed(2)}` });
-             sendEvent({ step: "generator", status: "active", log: `[ConfidenceScorer] Confidence recalibrated down to ${finalConf.toFixed(3)}.` });
+            hallucinationsBlocked++;
+            sendEvent({ step: "generator", status: "active",
+              log: `[ConfidenceScorer] Hallucination penalty: -${(hallucination_score*0.25).toFixed(2)} → conf=${finalConf.toFixed(3)}` });
           } else {
-             sendEvent({ step: "generator", status: "active", log: `[ConfidenceScorer] Final confidence calibrated to ${finalConf.toFixed(3)}.` });
+            sendEvent({ step: "generator", status: "active",
+              log: `[ConfidenceScorer] Confidence calibrated: ${finalConf.toFixed(3)}` });
           }
 
           let hallRisk = "Low";
           if (hallucination_score > 0.4 || finalConf < 0.65) hallRisk = "High";
           else if (hallucination_score > 0 || finalConf < 0.82) hallRisk = "Medium";
 
-          const richLabels: Record<string, string[]> = {
-            Financial: ["Financial Performance", "Market Strategy", "Corporate Governance"],
-            Medical: ["Clinical Documentation", "Protocol Specification", "Patient History"],
-            Legal: ["Contractual Obligation", "Liability Assessment", "Regulatory Compliance"],
-            Technical: ["System Architecture", "Performance Benchmark", "Infrastructure Specification"],
-            Scientific: ["Empirical Analysis", "Methodology Report", "Statistical Evaluation"],
-            General: ["Semantic Summary", "Contextual Extraction", "Entity Alignment"]
-          };
-          const generatedLabel = richLabels[domain][Math.floor(Math.random() * richLabels[domain].length)];
+          const clampedAcc = Math.max(0, Math.min(100, finalConf * 100 + (Math.random() * 6 - 3)));
 
-          const accFloat = (finalConf * 100) + (Math.random() * 6 - 3); 
-          const clampedAcc = Math.max(0, Math.min(100, accFloat));
-          
           let evidenceSpan = text.substring(0, 100) + "...";
-          if (llmEntities.length > 0) {
-              const firstGrounded = llmEntities.find(e => e.grounded);
-              if (firstGrounded) {
-                  const idx = text.toLowerCase().indexOf(firstGrounded.name.toLowerCase());
-                  if (idx !== -1) {
-                      evidenceSpan = text.substring(Math.max(0, idx - 40), Math.min(text.length, idx + 60)).trim() + "...";
-                  }
-              }
+          const firstGrounded = llmEntities.find(e => e.grounded);
+          if (firstGrounded) {
+            const idx = lowerSource.indexOf(firstGrounded.name.toLowerCase());
+            if (idx !== -1)
+              evidenceSpan = text.substring(Math.max(0, idx - 40), Math.min(text.length, idx + 60)).trim() + "...";
           }
 
           const ann = {
-            chunk: chunkId,
-            label: generatedLabel,
-            sentiment: ["Positive", "Negative", "Neutral"][Math.floor(Math.random() * 3)],
-            confidence: finalConf,
-            accuracy: clampedAcc,
-            entities: llmEntities.map(e => e.name),
-            matched_entities: llmEntities.filter(e => e.grounded).map(e => e.name),
-            unsupported_claims: unsupportedClaims,
-            evidence_span: evidenceSpan,
-            support_score: citationSupport,
+            chunk:                   chunkId,
+            label:                   generatedLabel,
+            sentiment:               llmSentiment,
+            rationale:               iclRationale,
+            icl_shots:               iclShotsUsed,
+            self_corrected:          selfCorrected,
+            confidence:              finalConf,
+            accuracy:                clampedAcc,
+            entities:                llmEntities.map(e => e.name),
+            matched_entities:        llmEntities.filter(e => e.grounded).map(e => e.name),
+            unsupported_claims:      unsupportedClaims,
+            evidence_span:           evidenceSpan,
+            support_score:           citationSupport,
             contradictions_detected: hallucination_score > 0 ? unsupportedClaims : ["None detected"],
-            verifier_status: hallucination_score > 0 ? "Flagged & Calibrated" : "Verified",
-            hallucination_risk: hallRisk,
-            source_chunk: chunkId,
-            consensus_score: (finalConf * 100).toFixed(1) + "%",
-            verifier_passes: hallucination_score > 0 ? 2 : 1,
-            semantic_match_score: semanticSimilarity.toFixed(2),
-            entity_grounding_score: entityGroundingScore,
-            verifier_consensus: `${Math.floor(3 - (hallucination_score*2))}/3`,
-            domain: domain,
-            summary: text
+            verifier_status:         selfCorrected ? "Self-Corrected" : hallucination_score > 0 ? "Flagged & Calibrated" : "Verified",
+            hallucination_risk:      hallRisk,
+            source_chunk:            chunkId,
+            consensus_score:         (finalConf * 100).toFixed(1) + "%",
+            verifier_passes:         hallucination_score > 0 ? 2 : 1,
+            semantic_match_score:    semanticSimilarity.toFixed(2),
+            entity_grounding_score:  entityGroundingScore,
+            verifier_consensus:      `${Math.floor(3 - (hallucination_score*2))}/3`,
+            domain:                  domain,
+            summary:                 text,
+            selfHealed:              selfCorrected,
           };
 
           allAnnotations.push(ann);

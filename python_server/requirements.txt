@@ -1,6 +1,24 @@
-fastapi
-uvicorn
-transformers
-torch
-accelerate
-pydantic
+# ContextForge AI — Python Inference Server Dependencies
+# FlagOS vllm-plugin-FL backend
+# Reference: https://github.com/flagos-ai/vllm-plugin-FL
+
+# ── Core serving ──────────────────────────────────────────────────────────────
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.0.0
+
+# ── vLLM (primary inference backend) ─────────────────────────────────────────
+# Install vLLM v0.20.2 as required by vllm-plugin-FL:
+#   pip install vllm==0.20.2
+# Or install the FlagOS fork:
+#   pip install git+https://github.com/flagos-ai/vllm-FL.git
+vllm>=0.4.0
+
+# ── Transformers (CPU fallback when vLLM is unavailable) ─────────────────────
+transformers>=4.40.0
+accelerate>=0.30.0
+torch>=2.1.0
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+sentencepiece
+protobuf
